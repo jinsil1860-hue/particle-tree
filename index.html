@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Gesture Particle Christmas Tree</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #061321; }
+    canvas { display: block; touch-action: none; }
+
+    #overlay{
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: radial-gradient(ellipse at center, rgba(6,19,33,.15), rgba(6,19,33,.92));
+      color: rgba(255,255,255,.9);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      z-index: 10;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    #panel{
+      max-width: 520px;
+      background: rgba(0,0,0,.28);
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 18px;
+      padding: 18px 16px;
+      box-shadow: 0 12px 40px rgba(0,0,0,.35);
+    }
+    #title{ font-size: 18px; letter-spacing: 2px; margin: 0 0 10px; color:#d9caa3; }
+    #desc{ font-size: 13px; line-height: 1.45; margin: 0 0 14px; color: rgba(255,255,255,.78); }
+    #startBtn{
+      width: 100%;
+      border: none;
+      border-radius: 14px;
+      padding: 14px 16px;
+      font-size: 15px;
+      font-weight: 700;
+      background: linear-gradient(135deg, rgba(255,220,140,.95), rgba(255,140,90,.9));
+      color: #1a1a1a;
+    }
+    #hint{
+      margin-top: 10px;
+      font-size: 12px;
+      color: rgba(255,255,255,.62);
+    }
+
+    #hud{
+      position: fixed; left: 14px; top: 14px; z-index: 5;
+      color: #d9caa3;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      letter-spacing: 2px; user-select: none;
+      text-shadow: 0 2px 12px rgba(0,0,0,.5);
+      pointer-events: none;
+    }
+    #badge{
+      position: fixed; left: 14px; top: 46px; z-index: 5;
+      color: rgba(255,255,255,.72);
+      font-family: system-ui; font-size: 12px;
+      user-select: none;
+      pointer-events: none;
+    }
+
+    /* 预览视频：默认隐藏，想看就把 opacity 调高 */
+    #video{
+      position: fixed; right: 10px; bottom: 10px; z-index: 5;
+      width: 132px; height: 176px;
+      opacity: 0.0;
+      border-radius: 12px; border: 1px solid rgba(255,255,255,.12);
+      transform: scaleX(-1);
+      background: #000;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="hud">MERRY CHRISTMAS</div>
+  <div id="badge">Gesture: <b id="state">...</b> | openness: <span id="open">0.00</span></div>
+
+  <div id="overlay">
+    <div id="panel">
+      <h1 id="title">手势粒子圣诞树</h1>
+      <p id="desc">
+        点“开始”会请求摄像头权限。<br/>
+        握拳：粒子收拢成树｜张开手：粒子爆炸散开。<br/><br/>
+        如果你在微信/抖音等内置浏览器里打不开摄像头，请用“系统浏览器打开”。
+      </p>
+      <button id="startBtn">开始（开启摄像头）</button>
+      <div id="hint" id="hintText">建议：手机竖屏，前置摄像头，对准手掌。</div>
+    </div>
+  </div>
+
+  <video id="video" playsinline muted></video>
+
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+    import { Hands } from 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js';
+
+    const hudState = document.getElementById('state');
+    const hudOpen  = document.getElementById('open');
+    const overlay  = document.getElementById('overlay');
+    const startBtn = document.getElementById('startBtn');
+    const video    = document.getElementById('video');
+
+    // ---------------------------
+    // Three.js
+    // ---------------------------
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x061321, 0.06);
+
+    const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 100);
+    camera.position.set(0, 2.2, 7);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); // 手机别拉太高
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.5;
+    controls.enablePan = false;
+    controls.minDistance = 3.5;
+    controls.maxDistance = 10;
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    function createParticleTexture() {
+      const c = document.createElement('canvas');
+      c.width = 64; c.height = 64;
+      const ctx = c.getContext('2d');
+      const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+      g.addColorStop(0.0, 'rgba(255,255,255,1)');
+      g.addColorStop(0.2, 'rgba(255,255,255,0.85)');
+      g.addColorStop(0.55,'rgba(255,255,255,0.22)');
+      g.addColorStop(1.0, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 64, 64);
+      return new THREE.CanvasTexture(c);
+    }
+
+    const PARTICLE_COUNT = 16000; // 手机稍微降一点更稳
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(PARTICLE_COUNT * 3);
+    const col = new Float32Array(PARTICLE_COUNT * 3);
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const i3 = i * 3;
+      pos[i3] = (Math.random() - 0.5) * 2;
+      pos[i3+1] = Math.random() * 3.5;
+      pos[i3+2] = (Math.random() - 0.5) * 2;
+
+      const isRed = Math.random() > 0.82;
+      if (isRed) { col[i3]=1.0; col[i3+1]=0.15; col[i3+2]=0.15; }
+      else { col[i3]=1.0; col[i3+1]=0.85; col[i3+2]=0.32; }
+    }
+
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+
+    const mat = new THREE.PointsMaterial({
+      size: 0.12,
+      map: createParticleTexture(),
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      vertexColors: true,
+      opacity: 0.85
+    });
+
+    const points = new THREE.Points(geo, mat);
+    scene.add(points);
+
+    // Snow
+    const snowCount = 1800;
+    const snowGeo = new THREE.BufferGeometry();
+    const snowPos = new Float32Array(snowCount * 3);
+    for (let i = 0; i < snowCount; i++) {
+      const i3 = i * 3;
+      snowPos[i3] = (Math.random() - 0.5) * 22;
+      snowPos[i3+1] = (Math.random() - 0.5) * 22;
+      snowPos[i3+2] = (Math.random() - 0.5) * 22;
+    }
+    snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPos, 3));
+    const snowMat = new THREE.PointsMaterial({
+      color: 0xffffff, size: 0.05, transparent: true, opacity: 0.35, depthWrite: false
+    });
+    const snow = new THREE.Points(snowGeo, snowMat);
+    scene.add(snow);
+
+    function updateSnow() {
+      const a = snowGeo.attributes.position.array;
+      for (let i = 1; i < a.length; i += 3) {
+        a[i] -= 0.02;
+        if (a[i] < -11) a[i] = 11;
+      }
+      snowGeo.attributes.position.needsUpdate = true;
+    }
+
+    // Tree targets
+    function generateTreeTargets(count) {
+      const out = new Float32Array(count * 3);
+      const height = 4.2;
+      const baseR = 1.8;
+      const curveP = 1.35;
+
+      for (let i = 0; i < count; i++) {
+        const i3 = i * 3;
+        const y = Math.pow(Math.random(), 0.65) * height;
+        const t = y / height;
+        const r = baseR * Math.pow(1 - t, curveP);
+
+        const radial = r * Math.pow(Math.random(), 0.55);
+        const ang = Math.random() * Math.PI * 2;
+        const jitter = (Math.random() - 0.5) * 0.05;
+
+        out[i3]     = Math.cos(ang) * radial + jitter;
+        out[i3 + 1] = y - 0.2;
+        out[i3 + 2] = Math.sin(ang) * radial + jitter;
+      }
+
+      // star cluster
+      const starCount = 220;
+      for (let k = 0; k < starCount; k++) {
+        const i = count - 1 - k;
+        const i3 = i * 3;
+        const ang = Math.random() * Math.PI * 2;
+        const rr = 0.18 * Math.pow(Math.random(), 0.4);
+        out[i3]     = Math.cos(ang) * rr;
+        out[i3 + 1] = height + 0.05 + (Math.random() - 0.5) * 0.12;
+        out[i3 + 2] = Math.sin(ang) * rr;
+
+        col[i3] = 1.0; col[i3+1] = 0.92; col[i3+2] = 0.45;
+      }
+      geo.attributes.color.needsUpdate = true;
+      return out;
+    }
+    const treeTargets = generateTreeTargets(PARTICLE_COUNT);
+
+    // Explosion velocities
+    const vel = new Float32Array(PARTICLE_COUNT * 3);
+
+    function triggerExplosion() {
+      const p = geo.attributes.position.array;
+      const cx = 0, cy = 1.7, cz = 0;
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const i3 = i * 3;
+        const dx = p[i3] - cx, dy = p[i3+1] - cy, dz = p[i3+2] - cz;
+        const len = Math.sqrt(dx*dx + dy*dy + dz*dz) + 1e-6;
+        const nx = dx / len, ny = dy / len, nz = dz / len;
+
+        const strength = 0.05 + Math.random() * 0.12;
+        vel[i3]     += nx * strength;
+        vel[i3 + 1] += ny * strength * 0.9 + 0.02;
+        vel[i3 + 2] += nz * strength;
+      }
+    }
+
+    // Gesture detection
+    const handGesture = {
+      state: "FIST",
+      openness: 0,
+      _openFrames: 0,
+      _fistFrames: 0,
+      _cooldown: 0
+    };
+
+    function dist(a, b) {
+      const dx = a.x - b.x, dy = a.y - b.y, dz = (a.z || 0) - (b.z || 0);
+      return Math.sqrt(dx*dx + dy*dy + dz*dz);
+    }
+
+    function updateGestureFromLandmarks(lm) {
+      const palm = dist(lm[0], lm[9]) + 1e-6;
+      const tips = [8, 12, 16, 20];
+      const mcps = [5, 9, 13, 17];
+
+      let sum = 0;
+      for (let i = 0; i < 4; i++) sum += dist(lm[tips[i]], lm[mcps[i]]) / palm;
+
+      let openness = sum / 4;
+      openness = Math.max(0, Math.min(1.2, openness));
+      handGesture.openness = handGesture.openness * 0.8 + openness * 0.2;
+
+      const OPEN_T = 0.75;
+      const FIST_T = 0.52;
+      const N = 4;
+      const COOLDOWN = 10;
+
+      if (handGesture._cooldown > 0) handGesture._cooldown--;
+
+      if (handGesture._cooldown === 0) {
+        if (handGesture.openness > OPEN_T) {
+          handGesture._openFrames++;
+          handGesture._fistFrames = 0;
+          if (handGesture._openFrames >= N && handGesture.state !== "OPEN") {
+            handGesture.state = "OPEN";
+            handGesture._cooldown = COOLDOWN;
+            handGesture._openFrames = 0;
+            triggerExplosion();
+          }
+        } else if (handGesture.openness < FIST_T) {
+          handGesture._fistFrames++;
+          handGesture._openFrames = 0;
+          if (handGesture._fistFrames >= N && handGesture.state !== "FIST") {
+            handGesture.state = "FIST";
+            handGesture._cooldown = COOLDOWN;
+            handGesture._fistFrames = 0;
+          }
+        } else {
+          handGesture._openFrames = Math.max(0, handGesture._openFrames - 1);
+          handGesture._fistFrames = Math.max(0, handGesture._fistFrames - 1);
+        }
+      }
+
+      hudState.textContent = handGesture.state;
+      hudOpen.textContent = handGesture.openness.toFixed(2);
+    }
+
+    function updateParticles() {
+      const p = geo.attributes.position.array;
+      const gatherLerp = 0.06;
+      const explodeLerp = 0.18;
+      const t = performance.now() * 0.001;
+
+      if (handGesture.state === "FIST") {
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+          const i3 = i * 3;
+          const tx = treeTargets[i3], ty = treeTargets[i3+1], tz = treeTargets[i3+2];
+
+          p[i3]     += (tx - p[i3])     * gatherLerp;
+          p[i3 + 1] += (ty - p[i3 + 1]) * gatherLerp;
+          p[i3 + 2] += (tz - p[i3 + 2]) * gatherLerp;
+
+          vel[i3] *= 0.78; vel[i3+1] *= 0.78; vel[i3+2] *= 0.78;
+
+          p[i3]     += Math.sin(t + i * 0.01) * 0.0006;
+          p[i3 + 2] += Math.cos(t + i * 0.01) * 0.0006;
+        }
+      } else {
+        const damp = 0.985;
+        const bound = 8.0;
+        const cx = 0, cy = 1.7, cz = 0;
+
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+          const i3 = i * 3;
+
+          p[i3]     += vel[i3]     * explodeLerp;
+          p[i3 + 1] += vel[i3 + 1] * explodeLerp;
+          p[i3 + 2] += vel[i3 + 2] * explodeLerp;
+
+          vel[i3]     += Math.sin(t * 0.7 + i * 0.013) * 0.00018;
+          vel[i3 + 2] += Math.cos(t * 0.7 + i * 0.013) * 0.00018;
+
+          vel[i3] *= damp; vel[i3+1] *= damp; vel[i3+2] *= damp;
+
+          const dx = p[i3]-cx, dy = p[i3+1]-cy, dz = p[i3+2]-cz;
+          const r = Math.sqrt(dx*dx + dy*dy + dz*dz) + 1e-6;
+          if (r > bound) {
+            const pull = (r - bound) * 0.0035;
+            vel[i3]     -= (dx / r) * pull;
+            vel[i3 + 1] -= (dy / r) * pull;
+            vel[i3 + 2] -= (dz / r) * pull;
+          }
+        }
+      }
+
+      geo.attributes.position.needsUpdate = true;
+      controls.autoRotateSpeed = (handGesture.state === "OPEN") ? 2.0 : 0.5;
+      mat.size = 0.12 + Math.sin(t * 2.0) * 0.02;
+    }
+
+    // ---------------------------
+    // MediaPipe Hands (no camera_utils)
+    // ---------------------------
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6
+    });
+
+    let latestLandmarks = null;
+    hands.onResults((res) => {
+      if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+        latestLandmarks = res.multiHandLandmarks[0];
+      } else {
+        latestLandmarks = null;
+      }
+    });
+
+    let running = false;
+
+    async function startCameraAndLoop() {
+      // iOS/手机：必须用户点击触发
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: "user",
+          width: { ideal: 640 },
+          height: { ideal: 480 }
+        }
+      });
+      video.srcObject = stream;
+      await video.play();
+
+      overlay.style.display = 'none';
+      running = true;
+
+      // 初始化先成树
+      for (let i = 0; i < pos.length; i++) pos[i] = treeTargets[i];
+      geo.attributes.position.needsUpdate = true;
+
+      // 处理循环：每帧把 video 送进 hands
+      async function processFrame() {
+        if (!running) return;
+        await hands.send({ image: video });
+        requestAnimationFrame(processFrame);
+      }
+      requestAnimationFrame(processFrame);
+
+      // 渲染循环
+      function animate() {
+        requestAnimationFrame(animate);
+        if (latestLandmarks) updateGestureFromLandmarks(latestLandmarks);
+        updateParticles();
+        updateSnow();
+        controls.update();
+        renderer.render(scene, camera);
+      }
+      animate();
+    }
+
+    startBtn.addEventListener('click', async () => {
+      try {
+        // 一些手机浏览器需要“播放”权限链路，这里已经满足
+        await startCameraAndLoop();
+      } catch (e) {
+        console.error(e);
+        startBtn.textContent = '无法开启摄像头（点我重试）';
+        document.getElementById('desc').innerHTML =
+          '摄像头开启失败。<br/>' +
+          '1) 请用系统浏览器打开（Safari/Chrome）。<br/>' +
+          '2) 检查是否禁止了摄像头权限。<br/>' +
+          '3) 某些应用内置浏览器不支持摄像头。';
+      }
+    }, { passive: true });
+
+  </script>
+</body>
+</html>
